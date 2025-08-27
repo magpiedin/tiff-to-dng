@@ -87,12 +87,21 @@ static dng_string gDumpDNG;
 
 static dng_string gCameraProfileName;
 
+static bool gConvertMode = false;
+
 /*****************************************************************************/
 
 static dng_error_code dng_validate (const char *filename)
 	{
 	
-	printf ("Validating \"%s\"...\n", filename);
+	if (gConvertMode)
+		{
+		printf ("Converting \"%s\"...\n", filename);
+		}
+	else
+		{
+		printf ("Validating \"%s\"...\n", filename);
+		}
 	
 	try
 		{
@@ -144,14 +153,55 @@ static dng_error_code dng_validate (const char *filename)
 			
 			info.PostParse (host);
 			
-			if (!info.IsValidDNG ())
+			if (!gConvertMode && !info.IsValidDNG ())
 				{
 				return dng_error_bad_format;
 				}
 				
 			negative.Reset (host.Make_dng_negative ());
 			
-			negative->Parse (host, stream, info);
+			if (gConvertMode)
+				{
+				dng_ifd &rawIFD = *info.fIFD [info.fMainIndex];
+
+				negative->SetModelName(info.fShared->fUniqueCameraModel.Get());
+
+				uint32 orientation = info.fIFD [0]->fOrientation;
+				if (orientation >= 1 && orientation <= 8)
+					{
+					negative->SetBaseOrientation (dng_orientation::TIFFtoDNG (orientation));
+					}
+
+				negative->SetColorChannels(rawIFD.fSamplesPerPixel);
+				negative->SetFloatingPoint(rawIFD.fSampleFormat [0] == sfFloatingPoint);
+
+				AutoPtr<dng_image> image(host.Make_dng_image (rawIFD.Bounds (),
+															 rawIFD.fSamplesPerPixel,
+															 rawIFD.PixelType ()));
+
+				rawIFD.ReadImage(host, stream, *image);
+
+				negative->SetStage3Image(image);
+
+				negative->ResetExif(info.fExif.Release());
+
+				if (info.fXMPBlock.Get())
+					{
+					negative->Metadata().SetEmbeddedXMP(host,
+														info.fXMPBlock->Buffer(),
+														info.fXMPBlock->LogicalSize());
+					}
+
+				for (uint32 plane = 0; plane < rawIFD.fSamplesPerPixel; plane++)
+					{
+					negative->SetBlackLevel(rawIFD.fBlackLevel[0][0][plane], plane);
+					negative->SetWhiteLevel(rawIFD.fWhiteLevel[plane], plane);
+					}
+				}
+			else
+				{
+				negative->Parse (host, stream, info);
+				}
 			
 			negative->PostParse (host, stream, info);
 			
@@ -425,128 +475,144 @@ static dng_error_code dng_validate (const char *filename)
 		if (gDumpDNG.NotEmpty ())
 			{
 			
-			// Build the preview list.
-			
-			dng_preview_list previewList;
-			
-			dng_date_time_info dateTimeInfo;
-			
-			CurrentDateTimeAndZone (dateTimeInfo);
-											  
-			for (uint32 previewIndex = 0; previewIndex < 2; previewIndex++)
+			if (gConvertMode)
 				{
-				
-				// Skip preview if writing a compresssed main image to save space
-				// in this example code.
-				
-				if (negative->RawLossyCompressedImage () != NULL && previewIndex > 0)
-					{
-					break;
-					}
-					
-				// Report timing.
-			
-				dng_timer timer (previewIndex == 0 ? "Build thumbnail time"
-												   : "Build preview time");
-				
-				// Render a preview sized image.
-				
-				AutoPtr<dng_image> previewImage;
-				
-					{
-					
-					dng_render render (host, *negative);
-					
-					render.SetFinalSpace (negative->IsMonochrome () ? dng_space_GrayGamma22::Get ()
-																	: dng_space_sRGB	   ::Get ());
-					
-					render.SetFinalPixelType (ttByte);
-					
-					render.SetMaximumSize (previewIndex == 0 ? 256 : 1024);
-				
-					previewImage.Reset (render.Render ());
-				
-					}
-					
-				// Don't write the preview if it is same size as thumbnail.
-				
-				if (previewIndex > 0 &&
-					Max_uint32 (previewImage->Bounds ().W (),
-								previewImage->Bounds ().H ()) <= 256)
-					{
-					break;
-					}
-				
-				// If we have compressed JPEG data, create a compressed thumbnail.	Otherwise
-				// save a uncompressed thumbnail.
-				
-				bool useCompressedPreview = (negative->RawLossyCompressedImage () != NULL) ||
-											(previewIndex > 0);
-				
-				AutoPtr<dng_preview> preview (useCompressedPreview ?
-											  (dng_preview *) new dng_jpeg_preview :
-											  (dng_preview *) new dng_image_preview);
-											  
-				// Setup up preview info.
-									
-				preview->fInfo.fApplicationName	  .Set ("dng_validate");
-				preview->fInfo.fApplicationVersion.Set (kDNGValidateVersion);
-				
-				preview->fInfo.fSettingsName.Set ("Default");
-
-				preview->fInfo.fColorSpace = previewImage->Planes () == 1 ?
-											 previewColorSpace_GrayGamma22 :
-											 previewColorSpace_sRGB;
-											
-				preview->fInfo.fDateTime = dateTimeInfo.Encode_ISO_8601 ();
-				
-				if (!useCompressedPreview)
-					{
-					
-					dng_image_preview *imagePreview = dynamic_cast<dng_image_preview *> (preview.Get ());
-				
-					imagePreview->SetImage (host,
-											previewImage.Release ());
-					
-					}
-					
-				else
-					{
-
-					dng_jpeg_preview *jpegPreview = dynamic_cast<dng_jpeg_preview *> (preview.Get ());
-					
-					int32 quality = (previewIndex == 0 ? 8 : 5);
-
-					dng_image_writer writer;
-					
-					writer.EncodeJPEGPreview (host,
-											  *previewImage,
-											  *jpegPreview,
-											  quality);
-										  
-					}
-		
-				previewList.Append (preview);
-				
-				}
-				
-			// Write DNG file.
-			
-			dng_file_stream stream2 (gDumpDNG.Get (), true);
-			
-				{
-				
-				dng_timer timer ("Write DNG time");
+				dng_file_stream stream2 (gDumpDNG.Get (), true);
 			
 				dng_image_writer writer;
 			
 				writer.WriteDNG (host,
 								 stream2,
 								 *negative.Get (),
-								 &previewList,
+								 NULL,
 								 dngVersion_SaveDefault,
 								 false);
+				}
+			else
+				{
+				// Build the preview list.
 
+				dng_preview_list previewList;
+				
+				dng_date_time_info dateTimeInfo;
+				
+				CurrentDateTimeAndZone (dateTimeInfo);
+
+				for (uint32 previewIndex = 0; previewIndex < 2; previewIndex++)
+					{
+					
+					// Skip preview if writing a compresssed main image to save space
+					// in this example code.
+
+					if (negative->RawLossyCompressedImage () != NULL && previewIndex > 0)
+						{
+						break;
+						}
+
+					// Report timing.
+				
+					dng_timer timer (previewIndex == 0 ? "Build thumbnail time"
+													   : "Build preview time");
+					
+					// Render a preview sized image.
+					
+					AutoPtr<dng_image> previewImage;
+					
+						{
+
+						dng_render render (host, *negative);
+
+						render.SetFinalSpace (negative->IsMonochrome () ? dng_space_GrayGamma22::Get ()
+																		: dng_space_sRGB	   ::Get ());
+
+						render.SetFinalPixelType (ttByte);
+
+						render.SetMaximumSize (previewIndex == 0 ? 256 : 1024);
+					
+						previewImage.Reset (render.Render ());
+					
+						}
+
+					// Don't write the preview if it is same size as thumbnail.
+					
+					if (previewIndex > 0 &&
+						Max_uint32 (previewImage->Bounds ().W (),
+									previewImage->Bounds ().H ()) <= 256)
+						{
+						break;
+						}
+					
+					// If we have compressed JPEG data, create a compressed thumbnail.	Otherwise
+					// save a uncompressed thumbnail.
+					
+					bool useCompressedPreview = (negative->RawLossyCompressedImage () != NULL) ||
+												(previewIndex > 0);
+
+					AutoPtr<dng_preview> preview (useCompressedPreview ?
+												  (dng_preview *) new dng_jpeg_preview :
+												  (dng_preview *) new dng_image_preview);
+
+					// Setup up preview info.
+
+					preview->fInfo.fApplicationName	  .Set ("dng_validate");
+					preview->fInfo.fApplicationVersion.Set (kDNGValidateVersion);
+
+					preview->fInfo.fSettingsName.Set ("Default");
+
+					preview->fInfo.fColorSpace = previewImage->Planes () == 1 ?
+												 previewColorSpace_GrayGamma22 :
+												 previewColorSpace_sRGB;
+
+					preview->fInfo.fDateTime = dateTimeInfo.Encode_ISO_8601 ();
+					
+					if (!useCompressedPreview)
+						{
+
+						dng_image_preview *imagePreview = dynamic_cast<dng_image_preview *> (preview.Get ());
+
+						imagePreview->SetImage (host,
+												previewImage.Release ());
+
+						}
+
+					else
+						{
+
+						dng_jpeg_preview *jpegPreview = dynamic_cast<dng_jpeg_preview *> (preview.Get ());
+
+						int32 quality = (previewIndex == 0 ? 8 : 5);
+
+						dng_image_writer writer;
+
+						writer.EncodeJPEGPreview (host,
+												  *previewImage,
+												  *jpegPreview,
+												  quality);
+
+						}
+
+					previewList.Append (preview);
+					
+					}
+
+				// Write DNG file.
+				
+				dng_file_stream stream2 (gDumpDNG.Get (), true);
+				
+					{
+
+					dng_timer timer ("Write DNG time");
+				
+					dng_image_writer writer;
+
+					writer.WriteDNG (host,
+									 stream2,
+									 *negative.Get (),
+									 &previewList,
+									 dngVersion_SaveDefault,
+									 false);
+
+					}
 				}
 				
 			gDumpDNG.Clear ();
@@ -729,6 +795,7 @@ int main (int argc, char *argv [])
 					 "-depthMap <file>      Write depth map to \"<file>.tif\"\n"
 					 "-tif <file>           Write TIF image to \"<file>.tif\"\n"
 					 "-dng <file>           Write DNG image to \"<file>.dng\"\n"
+					 "-convert              Convert TIFF to DNG\n"
 					 "\n",
 					 argv [0]);
 					 
@@ -1123,6 +1190,11 @@ int main (int argc, char *argv [])
 				
 				}
 				
+			else if (option.Matches ("convert", true))
+				{
+				gConvertMode = true;
+				}
+
 			else
 				{
 				fprintf (stderr, "*** Unknown option \"-%s\"\n", option.Get ());
