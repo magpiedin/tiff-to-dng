@@ -6,6 +6,7 @@ from pidng.defs import DNGVersion, PhotometricInterpretation
 import numpy as np
 import os
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 def main():
     parser = argparse.ArgumentParser(description='Convert a TIFF file to a DNG file.')
@@ -34,12 +35,9 @@ def main():
     tags.set(Tag.ImageWidth, [image.width])
     tags.set(Tag.ImageLength, [image.height])
     tags.set(Tag.BitsPerSample, [16] * len(image.getbands()))
-
-    if len(image.getbands()) > 1:
-        tags.set(Tag.SamplesPerPixel, [len(image.getbands())])
+    tags.set(Tag.SamplesPerPixel, [len(image.getbands())])
 
     tags.set(Tag.Software, "tiff-to-dng converter")
-    tags.set(Tag.DateTime, "") # Set a default empty value, will be overwritten by XMP if available
 
     # Add metadata from TIFF info
     if 'xmp' in image.info:
@@ -56,13 +54,34 @@ def main():
                     'crs': 'http://ns.adobe.com/camera-raw-settings/1.0/',
                 }
 
+                def format_date(date_str):
+                    try:
+                        # Handle timezone info if present
+                        if '+' in date_str or ('-' in date_str and date_str.rfind('-') > 7):
+                            dt_obj = datetime.fromisoformat(date_str)
+                        else:
+                            dt_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
+                        return dt_obj.strftime("%Y:%m:%d %H:%M:%S")
+                    except ValueError:
+                         # Handle cases with fractional seconds
+                        try:
+                            dt_obj = datetime.strptime(date_str.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                            return dt_obj.strftime("%Y:%m:%d %H:%M:%S")
+                        except:
+                            return None
+
+
                 create_date = root.find('.//xmp:CreateDate', ns)
-                if create_date is not None:
-                    tags.set(Tag.DateTimeOriginal, create_date.text)
+                if create_date is not None and create_date.text:
+                    formatted_date = format_date(create_date.text)
+                    if formatted_date:
+                        tags.set(Tag.DateTimeOriginal, formatted_date)
 
                 modify_date = root.find('.//xmp:ModifyDate', ns)
-                if modify_date is not None:
-                    tags.set(Tag.DateTime, modify_date.text)
+                if modify_date is not None and modify_date.text:
+                    formatted_date = format_date(modify_date.text)
+                    if formatted_date:
+                        tags.set(Tag.DateTime, formatted_date)
 
                 camera_profile = root.find('.//crs:CameraProfile', ns)
                 if camera_profile is not None:
@@ -70,6 +89,11 @@ def main():
 
             except ET.ParseError as e:
                 print(f"Error parsing XMP data: {e}")
+
+    # Set default DateTime if not found in XMP
+    if not tags.get(Tag.DateTime):
+        tags.set(Tag.DateTime, datetime.now().strftime("%Y:%m:%d %H:%M:%S"))
+
 
     tags.set(Tag.DNGVersion, DNGVersion.V1_4)
     tags.set(Tag.DNGBackwardVersion, DNGVersion.V1_0)
