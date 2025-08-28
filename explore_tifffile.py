@@ -1,0 +1,3 @@
+import tifffile
+
+help(tifffile)

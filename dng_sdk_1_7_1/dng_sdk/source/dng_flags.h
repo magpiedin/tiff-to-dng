@@ -33,7 +33,7 @@
 
 // This requires a force include or compiler define.  These are the unique platforms.
 
-#if !(defined(qMacOS) || defined(qWinOS) || defined(qAndroid) || defined(qiPhone) || defined(qLinux) || defined(qWeb))
+#ifndef qLinux
 #error Unable to figure out platform
 #endif
 
@@ -337,7 +337,7 @@
 /// 1 if dng_validate command line tool is being built, 0 otherwise.
 
 #ifndef qDNGValidateTarget
-#define qDNGValidateTarget 0
+#define qDNGValidateTarget 1
 #endif
 
 /*****************************************************************************/
