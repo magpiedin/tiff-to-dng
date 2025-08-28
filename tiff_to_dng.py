@@ -1,12 +1,16 @@
 import argparse
 from PIL import Image
 from pidng.core import RAW2DNG
-from pidng.dng import DNGTags, Tag
+from pidng.dng import DNGTags, Tag, Type
 from pidng.defs import DNGVersion, PhotometricInterpretation
 import numpy as np
 import os
 import xml.etree.ElementTree as ET
 from datetime import datetime
+
+# Manually define the ICCProfile tag as it's missing from pidng
+ICCProfileTag = (34675, Type.Undefined)
+Tag.ICCProfile = ICCProfileTag # Add it to the Tag class for convenience
 
 def main():
     parser = argparse.ArgumentParser(description='Convert a TIFF file to a DNG file.')
@@ -40,6 +44,9 @@ def main():
     tags.set(Tag.Software, "tiff-to-dng converter")
 
     # Add metadata from TIFF info
+    if 'icc_profile' in image.info and image.info['icc_profile']:
+        tags.set(Tag.ICCProfile, list(image.info['icc_profile']))
+
     if 'xmp' in image.info:
         xmp_data = image.info['xmp']
         xmp_str = xmp_data.decode('utf-8', 'ignore')
@@ -56,20 +63,17 @@ def main():
 
                 def format_date(date_str):
                     try:
-                        # Handle timezone info if present
                         if '+' in date_str or ('-' in date_str and date_str.rfind('-') > 7):
                             dt_obj = datetime.fromisoformat(date_str)
                         else:
                             dt_obj = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%S")
                         return dt_obj.strftime("%Y:%m:%d %H:%M:%S")
                     except ValueError:
-                         # Handle cases with fractional seconds
                         try:
                             dt_obj = datetime.strptime(date_str.split('.')[0], "%Y-%m-%dT%H:%M:%S")
                             return dt_obj.strftime("%Y:%m:%d %H:%M:%S")
                         except:
                             return None
-
 
                 create_date = root.find('.//xmp:CreateDate', ns)
                 if create_date is not None and create_date.text:
@@ -90,15 +94,12 @@ def main():
             except ET.ParseError as e:
                 print(f"Error parsing XMP data: {e}")
 
-    # Set default DateTime if not found in XMP
     if not tags.get(Tag.DateTime):
         tags.set(Tag.DateTime, datetime.now().strftime("%Y:%m:%d %H:%M:%S"))
-
 
     tags.set(Tag.DNGVersion, DNGVersion.V1_4)
     tags.set(Tag.DNGBackwardVersion, DNGVersion.V1_0)
     tags.set(Tag.UniqueCameraModel, "tiff-to-dng-converter")
-
 
     # Use pidng to convert to DNG
     try:
@@ -112,7 +113,6 @@ def main():
         print(f"Successfully converted {args.input_file} to {args.output_file}")
     except Exception as e:
         print(f"Error converting to DNG: {e}")
-
 
 if __name__ == '__main__':
     main()
